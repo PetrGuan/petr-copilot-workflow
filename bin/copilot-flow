@@ -516,25 +516,32 @@ start_role() {
   local role="$1"
   ensure_project
 
-  local model prompt flags=()
+  local model prompt
   model="$(role_model "$role")"
   prompt="$(make_interactive_prompt "$role")"
 
-  if [ -n "$INTERACTIVE_FLAGS" ]; then
-    # Intentionally allow splitting so users can provide multiple CLI flags.
-    # shellcheck disable=SC2206
-    flags=( $INTERACTIVE_FLAGS )
-  fi
-
   printf 'Starting interactive %s for %s with model %s\n' "$role" "$PROJECT_ID" "$model"
   printf 'Workbench: %s\n' "$PROJECT_DIR"
+  if [ -n "$INTERACTIVE_FLAGS" ]; then
+    # Intentionally allow splitting so users can provide multiple CLI flags.
+    # shellcheck disable=SC2086
+    set -- $INTERACTIVE_FLAGS
+    exec "$COPILOT_BIN" \
+      -C "$PROJECT_ROOT" \
+      --model "$model" \
+      --mode interactive \
+      --add-dir "$WORKFLOW_ROOT" \
+      -n "workflow-$PROJECT_ID-$role" \
+      "$@" \
+      -i "$prompt"
+  fi
+
   exec "$COPILOT_BIN" \
     -C "$PROJECT_ROOT" \
     --model "$model" \
     --mode interactive \
     --add-dir "$WORKFLOW_ROOT" \
     -n "workflow-$PROJECT_ID-$role" \
-    "${flags[@]}" \
     -i "$prompt"
 }
 
@@ -563,12 +570,11 @@ run_role() {
   set_status "$PROJECT_DIR" "$start_status"
   printf 'Starting %s for %s with model %s\n' "$role" "$PROJECT_ID" "$model"
 
-  local flags=()
   # Intentionally allow splitting so users can override with multiple flags.
-  # shellcheck disable=SC2206
-  flags=( $COPILOT_FLAGS )
+  # shellcheck disable=SC2086
+  set -- $COPILOT_FLAGS
 
-  if ! "$COPILOT_BIN" -C "$PROJECT_ROOT" --model "$model" "${flags[@]}" -p "$prompt"; then
+  if ! "$COPILOT_BIN" -C "$PROJECT_ROOT" --model "$model" "$@" -p "$prompt"; then
     set_status "$PROJECT_DIR" "$failure_status"
     rmdir "$lock" 2>/dev/null || true
     return 1
