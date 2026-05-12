@@ -1,0 +1,428 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+GITHUB_ROOT="${COPILOT_WORKFLOW_GITHUB_ROOT:-$HOME/Documents/GitHub}"
+WORKFLOW_ROOT="${COPILOT_WORKFLOW_ROOT:-$GITHUB_ROOT/.copilot-workflow}"
+DEFAULT_INTERVAL="${COPILOT_WORKFLOW_INTERVAL:-60}"
+ARCHITECT_MODEL="${COPILOT_WORKFLOW_ARCHITECT_MODEL:-gpt-5.5}"
+IMPLEMENTER_MODEL="${COPILOT_WORKFLOW_IMPLEMENTER_MODEL:-gpt-5.3-codex}"
+REVIEWER_MODEL="${COPILOT_WORKFLOW_REVIEWER_MODEL:-gpt-5.5}"
+COPILOT_BIN="${COPILOT_WORKFLOW_COPILOT_BIN:-copilot}"
+COPILOT_FLAGS="${COPILOT_WORKFLOW_COPILOT_FLAGS:---allow-all}"
+INTERACTIVE_FLAGS="${COPILOT_WORKFLOW_INTERACTIVE_FLAGS:-}"
+
+PROJECT_ROOT=""
+PROJECT_ID=""
+PROJECT_DIR=""
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  copilot-flow init
+  copilot-flow new "request text"
+  copilot-flow status
+  copilot-flow where
+  copilot-flow start <architect|implementer|reviewer>
+  copilot-flow run <architect|implementer|reviewer>
+  copilot-flow watch <architect|implementer|reviewer> [seconds]
+  copilot-flow prompts
+
+Environment:
+  COPILOT_WORKFLOW_GITHUB_ROOT       Default: $HOME/Documents/GitHub
+  COPILOT_WORKFLOW_ROOT              Default: $GITHUB_ROOT/.copilot-workflow
+  COPILOT_WORKFLOW_INTERVAL          Default: 60
+  COPILOT_WORKFLOW_ARCHITECT_MODEL   Default: gpt-5.5
+  COPILOT_WORKFLOW_IMPLEMENTER_MODEL Default: gpt-5.3-codex
+  COPILOT_WORKFLOW_REVIEWER_MODEL    Default: gpt-5.5
+  COPILOT_WORKFLOW_COPILOT_FLAGS     Default: --allow-all
+  COPILOT_WORKFLOW_INTERACTIVE_FLAGS Default: empty
+USAGE
+}
+
+die() {
+  printf 'copilot-flow: %s\n' "$*" >&2
+  exit 1
+}
+
+abspath_dir() {
+  cd "$1" 2>/dev/null && pwd -P
+}
+
+is_under() {
+  case "$1/" in
+    "$2/"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+project_root_for() {
+  local start="${1:-$PWD}"
+  local abs root rel first
+
+  abs="$(abspath_dir "$start")" || die "cannot access directory: $start"
+  GITHUB_ROOT="$(abspath_dir "$GITHUB_ROOT")" || die "cannot access GitHub root: $GITHUB_ROOT"
+
+  if root="$(git -C "$abs" rev-parse --show-toplevel 2>/dev/null)"; then
+    root="$(abspath_dir "$root")"
+    if is_under "$root" "$GITHUB_ROOT"; then
+      printf '%s\n' "$root"
+      return
+    fi
+  fi
+
+  if ! is_under "$abs" "$GITHUB_ROOT"; then
+    die "run this from a project under $GITHUB_ROOT"
+  fi
+
+  if [ "$abs" = "$GITHUB_ROOT" ]; then
+    printf '%s\n' "$GITHUB_ROOT"
+    return
+  fi
+
+  rel="${abs#$GITHUB_ROOT/}"
+  first="${rel%%/*}"
+  printf '%s\n' "$GITHUB_ROOT/$first"
+}
+
+project_id_for() {
+  local root="$1"
+  local rel
+  rel="${root#$GITHUB_ROOT/}"
+  if [ -z "$rel" ] || [ "$rel" = "$root" ]; then
+    rel="github-root"
+  fi
+  rel="${rel//\//__}"
+  printf '%s' "$rel" | sed 's#[^A-Za-z0-9._-]#_#g'
+}
+
+set_status() {
+  local dir="$1"
+  local status="$2"
+  {
+    printf '%s\n\n' "$status"
+    printf 'updated_at: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$dir/STATUS.md"
+}
+
+status_value() {
+  local dir="$1"
+  if [ ! -f "$dir/STATUS.md" ]; then
+    printf 'missing\n'
+    return
+  fi
+  sed -n '1{s/[[:space:]]//g;p;q;}' "$dir/STATUS.md"
+}
+
+ensure_project() {
+  PROJECT_ROOT="$(project_root_for "$PWD")"
+  PROJECT_ID="$(project_id_for "$PROJECT_ROOT")"
+  PROJECT_DIR="$WORKFLOW_ROOT/projects/$PROJECT_ID"
+
+  mkdir -p "$PROJECT_DIR"
+
+  if [ ! -f "$PROJECT_DIR/STATUS.md" ]; then
+    set_status "$PROJECT_DIR" "idle"
+  fi
+
+  for file in REQUEST.md PLAN.md IMPLEMENTATION.md REVIEW.md; do
+    if [ ! -f "$PROJECT_DIR/$file" ]; then
+      cp "$WORKFLOW_ROOT/templates/$file" "$PROJECT_DIR/$file"
+    fi
+  done
+
+  {
+    printf 'project_id: %s\n' "$PROJECT_ID"
+    printf 'project_root: %s\n' "$PROJECT_ROOT"
+    printf 'workflow_dir: %s\n' "$PROJECT_DIR"
+  } > "$PROJECT_DIR/PROJECT.md"
+}
+
+new_request() {
+  ensure_project
+  local request="$*"
+  if [ -z "$request" ] && [ ! -t 0 ]; then
+    request="$(cat)"
+  fi
+  [ -n "$request" ] || die "request text is required"
+
+  {
+    printf '# Request\n\n'
+    printf '%s\n\n' "$request"
+    printf '## Submitted\n\n'
+    printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$PROJECT_DIR/REQUEST.md"
+
+  cp "$WORKFLOW_ROOT/templates/PLAN.md" "$PROJECT_DIR/PLAN.md"
+  cp "$WORKFLOW_ROOT/templates/IMPLEMENTATION.md" "$PROJECT_DIR/IMPLEMENTATION.md"
+  cp "$WORKFLOW_ROOT/templates/REVIEW.md" "$PROJECT_DIR/REVIEW.md"
+  set_status "$PROJECT_DIR" "new-request"
+
+  printf 'Request queued for %s\n' "$PROJECT_ID"
+  printf 'Workbench: %s\n' "$PROJECT_DIR"
+}
+
+role_model() {
+  case "$1" in
+    architect) printf '%s\n' "$ARCHITECT_MODEL" ;;
+    implementer) printf '%s\n' "$IMPLEMENTER_MODEL" ;;
+    reviewer) printf '%s\n' "$REVIEWER_MODEL" ;;
+    *) die "unknown role: $1" ;;
+  esac
+}
+
+role_start_status() {
+  case "$1" in
+    architect) printf 'planning\n' ;;
+    implementer) printf 'implementing\n' ;;
+    reviewer) printf 'reviewing\n' ;;
+    *) die "unknown role: $1" ;;
+  esac
+}
+
+role_failure_status() {
+  case "$1" in
+    architect) printf 'failed-architect\n' ;;
+    implementer) printf 'failed-implementer\n' ;;
+    reviewer) printf 'failed-reviewer\n' ;;
+    *) die "unknown role: $1" ;;
+  esac
+}
+
+role_can_run() {
+  local role="$1"
+  local status="$2"
+  case "$role:$status" in
+    architect:new-request) return 0 ;;
+    implementer:ready-for-implementation) return 0 ;;
+    implementer:changes-requested) return 0 ;;
+    reviewer:ready-for-review) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+make_prompt() {
+  local role="$1"
+  cat <<PROMPT
+You are the $role in a shared three-agent Copilot workflow.
+
+Project root:
+$PROJECT_ROOT
+
+Project workflow directory:
+$PROJECT_DIR
+
+Workflow files:
+- REQUEST.md: user request
+- PLAN.md: architect plan
+- IMPLEMENTATION.md: implementer notes
+- REVIEW.md: reviewer findings
+- STATUS.md: first line is the current workflow status
+
+Hard rules:
+- Use the workflow files as the source of truth. Do not ask the user to paste task context from another window.
+- Keep the task scoped to this project.
+- Preserve unrelated user changes.
+- If blocked or the request is ambiguous, write the blocker into the role output file and set STATUS.md to blocked.
+
+Role-specific instructions:
+
+Architect:
+- This role is triggered from new-request. The launcher may already have changed STATUS.md to planning before this prompt starts; proceed if your current role is architect.
+- Read REQUEST.md and inspect the codebase as needed.
+- Do not modify project source code.
+- Write a concrete implementation plan to PLAN.md, including files likely involved, steps, validation, and risks.
+- Set STATUS.md to ready-for-implementation when the plan is ready.
+
+Implementer:
+- This role is triggered from ready-for-implementation or changes-requested. The launcher may already have changed STATUS.md to implementing before this prompt starts; proceed if your current role is implementer.
+- Read REQUEST.md, PLAN.md, and REVIEW.md if present.
+- Implement only the planned or review-requested changes.
+- Run the relevant existing validation commands.
+- Write IMPLEMENTATION.md with summary, files changed, and validation result.
+- Set STATUS.md to ready-for-review when implementation is ready.
+
+Reviewer:
+- This role is triggered from ready-for-review. The launcher may already have changed STATUS.md to reviewing before this prompt starts; proceed if your current role is reviewer.
+- Read REQUEST.md, PLAN.md, IMPLEMENTATION.md, and inspect the current git diff.
+- Do not modify project source code.
+- Write REVIEW.md with only correctness, security, reliability, test coverage, or maintainability findings.
+- If there are blocking issues, set STATUS.md to changes-requested.
+- If there are no blocking issues, set STATUS.md to approved.
+
+Execute only the responsibilities for your current role: $role.
+PROMPT
+}
+
+make_interactive_prompt() {
+  local role="$1"
+  make_prompt "$role"
+  cat <<PROMPT
+
+Interactive session rules:
+- This is a persistent interactive $role window, not a one-shot automation run.
+- On startup, read STATUS.md and the relevant workflow files, then briefly state the current workflow status.
+- If the current status is actionable for $role, begin that role's work.
+- If the current status is not actionable for $role, stay available for role-specific discussion, corrections, and guidance.
+- When the user gives feedback in this window, treat it as an instruction for $role and update the relevant workflow file or project code according to this role's permissions.
+- Do not ask the user to paste context from other windows. Re-read REQUEST.md, PLAN.md, IMPLEMENTATION.md, REVIEW.md, STATUS.md, and git diff as needed.
+- Keep this session interactive after completing a step so the user can continue correcting or discussing the work.
+PROMPT
+}
+
+start_role() {
+  local role="$1"
+  ensure_project
+
+  local model prompt flags=()
+  model="$(role_model "$role")"
+  prompt="$(make_interactive_prompt "$role")"
+
+  if [ -n "$INTERACTIVE_FLAGS" ]; then
+    # Intentionally allow splitting so users can provide multiple CLI flags.
+    # shellcheck disable=SC2206
+    flags=( $INTERACTIVE_FLAGS )
+  fi
+
+  printf 'Starting interactive %s for %s with model %s\n' "$role" "$PROJECT_ID" "$model"
+  printf 'Workbench: %s\n' "$PROJECT_DIR"
+  exec "$COPILOT_BIN" \
+    -C "$PROJECT_ROOT" \
+    --model "$model" \
+    --mode interactive \
+    --add-dir "$WORKFLOW_ROOT" \
+    -n "workflow-$PROJECT_ID-$role" \
+    "${flags[@]}" \
+    -i "$prompt"
+}
+
+run_role() {
+  local role="$1"
+  ensure_project
+
+  local status lock model start_status failure_status prompt
+  status="$(status_value "$PROJECT_DIR")"
+  if ! role_can_run "$role" "$status"; then
+    printf '%s is idle for status %s\n' "$role" "$status"
+    return 0
+  fi
+
+  lock="$PROJECT_DIR/.lock-$role"
+  if ! mkdir "$lock" 2>/dev/null; then
+    printf '%s is already running for %s\n' "$role" "$PROJECT_ID"
+    return 0
+  fi
+
+  model="$(role_model "$role")"
+  start_status="$(role_start_status "$role")"
+  failure_status="$(role_failure_status "$role")"
+  prompt="$(make_prompt "$role")"
+
+  set_status "$PROJECT_DIR" "$start_status"
+  printf 'Starting %s for %s with model %s\n' "$role" "$PROJECT_ID" "$model"
+
+  local flags=()
+  # Intentionally allow splitting so users can override with multiple flags.
+  # shellcheck disable=SC2206
+  flags=( $COPILOT_FLAGS )
+
+  if ! "$COPILOT_BIN" -C "$PROJECT_ROOT" --model "$model" "${flags[@]}" -p "$prompt"; then
+    set_status "$PROJECT_DIR" "$failure_status"
+    rmdir "$lock" 2>/dev/null || true
+    return 1
+  fi
+
+  rmdir "$lock" 2>/dev/null || true
+}
+
+watch_role() {
+  local role="$1"
+  local interval="${2:-$DEFAULT_INTERVAL}"
+  printf 'Watching %s every %s seconds\n' "$role" "$interval"
+  while true; do
+    run_role "$role" || true
+    sleep "$interval"
+  done
+}
+
+status_cmd() {
+  ensure_project
+  printf 'Project:   %s\n' "$PROJECT_ID"
+  printf 'Root:      %s\n' "$PROJECT_ROOT"
+  printf 'Workbench: %s\n' "$PROJECT_DIR"
+  printf 'Status:    %s\n' "$(status_value "$PROJECT_DIR")"
+}
+
+prompts_cmd() {
+  cat <<'PROMPTS'
+Open three terminal windows in the project directory and run:
+
+  copilot-architect
+  copilot-implementer
+  copilot-reviewer
+
+Equivalent long form:
+
+  copilot-flow start architect
+  copilot-flow start implementer
+  copilot-flow start reviewer
+
+Then submit work from the project directory:
+
+  copilot-flow new "Describe the task here."
+PROMPTS
+}
+
+case "$(basename "$0")" in
+  copilot-architect)
+    set -- start architect "$@"
+    ;;
+  copilot-implementer)
+    set -- start implementer "$@"
+    ;;
+  copilot-reviewer)
+    set -- start reviewer "$@"
+    ;;
+esac
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+  init)
+    ensure_project
+    status_cmd
+    ;;
+  new)
+    new_request "$@"
+    ;;
+  status)
+    status_cmd
+    ;;
+  where)
+    ensure_project
+    printf '%s\n' "$PROJECT_DIR"
+    ;;
+  start)
+    [ $# -eq 1 ] || die "usage: copilot-flow start <architect|implementer|reviewer>"
+    start_role "$1"
+    ;;
+  run)
+    [ $# -eq 1 ] || die "usage: copilot-flow run <architect|implementer|reviewer>"
+    run_role "$1"
+    ;;
+  watch)
+    [ $# -ge 1 ] || die "usage: copilot-flow watch <architect|implementer|reviewer> [seconds]"
+    watch_role "$1" "${2:-$DEFAULT_INTERVAL}"
+    ;;
+  prompts)
+    prompts_cmd
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac
+
