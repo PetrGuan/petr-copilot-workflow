@@ -6,7 +6,7 @@ A lightweight shared workbench for running three interactive GitHub Copilot CLI 
 2. Implementer: follows the plan and changes code.
 3. Reviewer: reviews the diff and approves or requests changes.
 
-The goal is to avoid manually copying context between windows. Each role reads and writes the same project-specific workflow files.
+The goal is to avoid manually copying context between windows. Each role reads and writes the same project-local workflow files.
 
 ## Requirements
 
@@ -22,21 +22,24 @@ Clone this repository, then run:
 ./install.sh
 ```
 
-By default, projects are expected under:
+By default, the workflow state lives inside each project:
 
 ```text
-$HOME/Documents/GitHub
+<project>/.copilot-workflow/
 ```
 
-Override this if your projects live elsewhere:
+This makes the workflow files visible to git so you can review, commit, and share the agent handoff history with the project.
+
+The old central storage mode is still available:
 
 ```bash
-export COPILOT_WORKFLOW_GITHUB_ROOT="/path/to/projects"
+export COPILOT_WORKFLOW_STORAGE=central
+export COPILOT_WORKFLOW_ROOT="$HOME/Documents/GitHub/.copilot-workflow"
 ```
 
 ## Quick start
 
-From any project directory under your GitHub root:
+From any project directory:
 
 ```bash
 copilot-flow init
@@ -61,7 +64,7 @@ The role will capture the request into the shared workbench and advance the work
 The three role windows share state through:
 
 ```text
-$COPILOT_WORKFLOW_GITHUB_ROOT/.copilot-workflow/projects/<project-id>/
+<project>/.copilot-workflow/
 ```
 
 ## Commands
@@ -73,6 +76,7 @@ copilot-flow status
 copilot-flow where
 copilot-flow set-status ready-for-implementation
 copilot-flow refresh
+copilot-flow migrate
 copilot-flow start architect
 copilot-flow start implementer
 copilot-flow start reviewer
@@ -109,6 +113,7 @@ LOG.md
 INDEX.md
 DASHBOARD.html
 PROJECT.md
+.gitignore
 ```
 
 `STATUS.md` drives the handoff:
@@ -133,11 +138,54 @@ failed-reviewer
 
 `DASHBOARD.html` is a generated visual dashboard for humans. It is intentionally derived from the Markdown files rather than replacing them.
 
+The project-local `.copilot-workflow/.gitignore` ignores only transient files:
+
+```text
+.lock-*
+DASHBOARD.html.tmp
+```
+
+Everything else can be tracked by the project repository. Be careful not to put secrets, credentials, or sensitive private context into workflow files if the project will be pushed to a remote.
+
 Regenerate generated files manually:
 
 ```bash
 copilot-flow refresh
 ```
+
+## Storage modes
+
+Default project-local mode:
+
+```bash
+unset COPILOT_WORKFLOW_STORAGE
+unset COPILOT_WORKFLOW_ROOT
+copilot-flow init
+```
+
+Central compatibility mode:
+
+```bash
+export COPILOT_WORKFLOW_STORAGE=central
+export COPILOT_WORKFLOW_ROOT="$HOME/Documents/GitHub/.copilot-workflow"
+copilot-flow init
+```
+
+If `COPILOT_WORKFLOW_ROOT` is set, `copilot-flow` assumes central mode for backwards compatibility.
+
+When project-local mode initializes a project, it will copy an existing legacy central workbench from:
+
+```text
+$HOME/Documents/GitHub/.copilot-workflow/projects/<project-id>/
+```
+
+to:
+
+```text
+<project>/.copilot-workflow/
+```
+
+The legacy central copy is left in place.
 
 ## Recommended skills
 
