@@ -10,6 +10,7 @@ COPILOT_DIR="${COPILOT_WORKFLOW_COPILOT_DIR:-$HOME/.copilot}"
 mkdir -p "$WORKFLOW_ROOT/templates" "$WORKFLOW_ROOT/projects" "$BIN_DIR" "$COPILOT_DIR"
 
 cp "$REPO_ROOT/templates/"*.md "$WORKFLOW_ROOT/templates/"
+cp "$REPO_ROOT/README.md" "$WORKFLOW_ROOT/README.md"
 
 ln -sf "$REPO_ROOT/bin/copilot-flow" "$BIN_DIR/copilot-flow"
 ln -sf "$REPO_ROOT/bin/copilot-flow" "$BIN_DIR/copilot-architect"
@@ -78,6 +79,18 @@ Role rules:
 
 Do not ask the user to manually paste context between role windows. Read the workflow files instead.
 
+Do not ask the user to manually run \`copilot-flow new\`. If the user gives a new top-level task in plain language, capture it yourself by running:
+
+\`\`\`bash
+copilot-flow new <<'REQUEST'
+<full user request>
+REQUEST
+\`\`\`
+
+If running the command is not appropriate, update \`REQUEST.md\` directly, reset \`PLAN.md\`, \`IMPLEMENTATION.md\`, and \`REVIEW.md\` from the workflow templates, and set \`STATUS.md\` to \`new-request\`.
+
+Architect should continue directly into planning after capturing a new request. Implementer and Reviewer should capture new top-level requests and set status to \`new-request\` unless the user explicitly asks to bypass planning.
+
 All three roles may be interactive. If the user gives feedback in a role window, treat it as role-specific guidance and update the relevant workflow file or project code according to that role's rules.
 EOF
 
@@ -86,4 +99,3 @@ chmod +x "$REPO_ROOT/bin/copilot-flow"
 printf 'Installed Petr Copilot Workflow\n'
 printf 'Workflow root: %s\n' "$WORKFLOW_ROOT"
 printf 'Commands linked in: %s\n' "$BIN_DIR"
-

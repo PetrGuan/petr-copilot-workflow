@@ -220,9 +220,20 @@ Workflow files:
 
 Hard rules:
 - Use the workflow files as the source of truth. Do not ask the user to paste task context from another window.
+- Do not ask the user to manually run copilot-flow commands. If a workflow command is needed, run it yourself.
 - Keep the task scoped to this project.
 - Preserve unrelated user changes.
 - If blocked or the request is ambiguous, write the blocker into the role output file and set STATUS.md to blocked.
+
+Conversational intake:
+- The user may submit new work by directly chatting in any role window.
+- If the user gives a new top-level task, capture the full request yourself. For a one-line request, run: copilot-flow new "<full user request>"
+- For a multi-line request, use a heredoc with the REQUEST terminator at the start of the line:
+  copilot-flow new <<'REQUEST'
+<full user request>
+REQUEST
+- If running the command is not appropriate, update REQUEST.md directly, reset PLAN.md, IMPLEMENTATION.md, and REVIEW.md from the workflow templates, and set STATUS.md to new-request.
+- Distinguish new top-level requests from role-specific feedback. Feedback such as "this implementation is wrong" or "review this edge case" should update the current role's work, not reset the request.
 
 Role-specific instructions:
 
@@ -232,6 +243,7 @@ Architect:
 - Do not modify project source code.
 - Write a concrete implementation plan to PLAN.md, including files likely involved, steps, validation, and risks.
 - Set STATUS.md to ready-for-implementation when the plan is ready.
+- If the user gives a new top-level task directly to the Architect, capture it, then immediately continue with planning.
 
 Implementer:
 - This role is triggered from ready-for-implementation or changes-requested. The launcher may already have changed STATUS.md to implementing before this prompt starts; proceed if your current role is implementer.
@@ -240,6 +252,7 @@ Implementer:
 - Run the relevant existing validation commands.
 - Write IMPLEMENTATION.md with summary, files changed, and validation result.
 - Set STATUS.md to ready-for-review when implementation is ready.
+- If the user gives a new top-level task directly to the Implementer, capture it and set STATUS.md to new-request unless the user explicitly asks to bypass planning.
 
 Reviewer:
 - This role is triggered from ready-for-review. The launcher may already have changed STATUS.md to reviewing before this prompt starts; proceed if your current role is reviewer.
@@ -248,6 +261,7 @@ Reviewer:
 - Write REVIEW.md with only correctness, security, reliability, test coverage, or maintainability findings.
 - If there are blocking issues, set STATUS.md to changes-requested.
 - If there are no blocking issues, set STATUS.md to approved.
+- If the user gives a new top-level task directly to the Reviewer, capture it and set STATUS.md to new-request unless the user is asking for review guidance.
 
 Execute only the responsibilities for your current role: $role.
 PROMPT
@@ -264,6 +278,7 @@ Interactive session rules:
 - If the current status is actionable for $role, begin that role's work.
 - If the current status is not actionable for $role, stay available for role-specific discussion, corrections, and guidance.
 - When the user gives feedback in this window, treat it as an instruction for $role and update the relevant workflow file or project code according to this role's permissions.
+- When the user states a new task in plain language, do the workflow intake yourself. The user should not need to run copilot-flow new manually.
 - Do not ask the user to paste context from other windows. Re-read REQUEST.md, PLAN.md, IMPLEMENTATION.md, REVIEW.md, STATUS.md, and git diff as needed.
 - Keep this session interactive after completing a step so the user can continue correcting or discussing the work.
 PROMPT
@@ -425,4 +440,3 @@ case "$cmd" in
     exit 1
     ;;
 esac
-

@@ -50,11 +50,13 @@ copilot-implementer
 copilot-reviewer
 ```
 
-Submit a request:
+Submit a request by chatting directly in any role window. For example, in the Architect window you can simply say:
 
-```bash
-copilot-flow new "Implement the feature or fix the bug described here."
+```text
+Implement the feature or fix the bug described here.
 ```
+
+The role will capture the request into the shared workbench and advance the workflow. You do not need to manually run a queue command during normal use.
 
 The three role windows share state through:
 
@@ -73,6 +75,8 @@ copilot-flow start architect
 copilot-flow start implementer
 copilot-flow start reviewer
 ```
+
+`copilot-flow new` is still available as a scriptable intake command, but the preferred interactive workflow is to speak to the role windows directly.
 
 Shortcuts:
 
@@ -153,4 +157,3 @@ export COPILOT_WORKFLOW_INTERACTIVE_FLAGS="--allow-all"
 ## License
 
 MIT
-
